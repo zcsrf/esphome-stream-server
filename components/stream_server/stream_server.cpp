@@ -40,8 +40,26 @@ void StreamServerComponent::setup() {
     this->socket_->setblocking(false);
     this->socket_->bind(reinterpret_cast<struct sockaddr *>(&bind_addr), bind_addrlen);
     this->socket_->listen(8);
+    this->pylontech_setup();
+}
 
-    this->publish_sensor();
+void StreamServerComponent::pylontech_setup()
+{
+    ESP_LOGCONFIG(TAG, "Sending magic string.");
+    this->stream_->set_baud_rate(1200);
+    //{0x7E, 0x32, 0x30, 0x30, 0x31, 0x34, 0x36, 0x38, 0x32, 0x43, 0x30, 0x30, 0x34, 0x38, 0x35, 0x32, 0x30, 0x46, 0x43, 0x43, 0x33, 0x0D};
+    this->stream_->write_str("~20014682C0048520FCC3\r");
+    delay(500);
+    this->stream_->set_baud_rate(115200);
+    uint8_t newLineBuff[] = {0x0E, 0x0A};
+    this->stream_->write_array(newLineBuff, sizeof(newLineBuff));
+    delay(500);
+    size_t len;
+    while ((len = this->stream_->available()) > 0)
+    {
+        uint8_t buf[128];
+        this->stream_->read_array(buf, std::min<size_t>(len, 128));
+    }
 }
 
 void StreamServerComponent::loop() {

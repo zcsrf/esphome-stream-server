@@ -55,6 +55,7 @@ public:
     void set_port(uint16_t port) { this->port_ = port; }
 
 protected:
+    void pylontech_setup();
     void publish_sensor();
 
     void accept();
