@@ -1,24 +1,9 @@
-/* Copyright (C) 2020-2023 Oxan van Leeuwen
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
 #include "stream_server.h"
 
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #include "esphome/core/util.h"
+#include "esphome/core/version.h"
 
 #include "esphome/components/network/util.h"
 #include "esphome/components/socket/socket.h"
@@ -34,7 +19,11 @@ void StreamServerComponent::setup() {
     this->buf_ = std::unique_ptr<uint8_t[]>{new uint8_t[this->buf_size_]};
 
     struct sockaddr_storage bind_addr;
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2023, 4, 0)
+    socklen_t bind_addrlen = socket::set_sockaddr_any(reinterpret_cast<struct sockaddr *>(&bind_addr), sizeof(bind_addr), this->port_);
+#else
     socklen_t bind_addrlen = socket::set_sockaddr_any(reinterpret_cast<struct sockaddr *>(&bind_addr), sizeof(bind_addr), htons(this->port_));
+#endif
 
     this->socket_ = socket::socket_ip(SOCK_STREAM, PF_INET);
     this->socket_->setblocking(false);
@@ -149,9 +138,10 @@ void StreamServerComponent::read() {
 }
 
 void StreamServerComponent::flush() {
+    ssize_t written;
     this->buf_tail_ = this->buf_head_;
     for (Client &client : this->clients_) {
-        if (client.position == this->buf_head_)
+        if (client.disconnected || client.position == this->buf_head_)
             continue;
 
         // Split the write into two parts: from the current position to the end of the ring buffer, and from the start
@@ -161,22 +151,39 @@ void StreamServerComponent::flush() {
         iov[0].iov_len = std::min(this->buf_head_ - client.position, this->buf_ahead(client.position));
         iov[1].iov_base = &this->buf_[0];
         iov[1].iov_len = this->buf_head_ - (client.position + iov[0].iov_len);
-        client.position += client.socket->writev(iov, 2);
+        if ((written = client.socket->writev(iov, 2)) > 0) {
+            client.position += written;
+        } else if (written == 0 || errno == ECONNRESET) {
+            ESP_LOGD(TAG, "Client %s disconnected", client.identifier.c_str());
+            client.disconnected = true;
+            continue;  // don't consider this client when calculating the tail position
+        } else if (errno == EWOULDBLOCK || errno == EAGAIN) {
+            // Expected if the (TCP) transmit buffer is full, nothing to do.
+        } else {
+            ESP_LOGE(TAG, "Failed to write to client %s with error %d!", client.identifier.c_str(), errno);
+        }
+
         this->buf_tail_ = std::min(this->buf_tail_, client.position);
     }
 }
 
 void StreamServerComponent::write() {
     uint8_t buf[128];
-    ssize_t len;
+    ssize_t read;
     for (Client &client : this->clients_) {
-        while ((len = client.socket->read(&buf, sizeof(buf))) > 0)
-            this->stream_->write_array(buf, len);
+        if (client.disconnected)
+            continue;
 
-        if (len == 0) {
+        while ((read = client.socket->read(&buf, sizeof(buf))) > 0)
+            this->stream_->write_array(buf, read);
+
+        if (read == 0 || errno == ECONNRESET) {
             ESP_LOGD(TAG, "Client %s disconnected", client.identifier.c_str());
             client.disconnected = true;
-            continue;
+        } else if (errno == EWOULDBLOCK || errno == EAGAIN) {
+            // Expected if the (TCP) receive buffer is empty, nothing to do.
+        } else {
+            ESP_LOGW(TAG, "Failed to read from client %s with error %d!", client.identifier.c_str(), errno);
         }
     }
 }
