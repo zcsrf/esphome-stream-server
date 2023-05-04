@@ -8,9 +8,9 @@
 #include "esphome/components/network/util.h"
 #include "esphome/components/socket/socket.h"
 
-static const char *TAG = "stream_server";
+namespace esphome{
 
-using namespace esphome;
+static const char *TAG = "stream_server";
 
 void StreamServerComponent::setup() {
     ESP_LOGCONFIG(TAG, "Setting up stream server...");
@@ -190,3 +190,4 @@ void StreamServerComponent::write() {
 
 StreamServerComponent::Client::Client(std::unique_ptr<esphome::socket::Socket> socket, std::string identifier, size_t position)
     : socket(std::move(socket)), identifier{identifier}, position{position} {}
+}
